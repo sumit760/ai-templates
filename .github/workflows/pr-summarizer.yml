@@ -1,0 +1,45 @@
+name: PR Summarizer
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, ready_for_review, edited]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  summarize:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (optional)
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests openai pyyaml
+
+      - name: Run PR summarizer
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}  # Provide this in repo/org secrets
+          MODEL_NAME: gpt-4o-mini                        # Change to your preferred model
+          SUMMARY_TONE: "concise"                        # concise | detailed
+          MAX_INPUT_CHARS: "220000"                      # budget for diff+context
+          EXCLUDE_GLOBS: |
+            **/*.lock
+            **/*.min.js
+            **/*.map
+            **/*.png
+            **/*.jpg
+            **/*.jpeg
+            **/*.gif
+            **/*.pdf
+        run: |
+          python .github/scripts/pr_summarizer.py
