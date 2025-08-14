@@ -7,7 +7,7 @@ from typing import List, Dict, Optional
 # --------------------------
 
 PR_SUMMARY_MARKER = "<!-- pr-summarizer-bot -->"
-DEFAULT_MODEL = os.getenv("MODEL_NAME", "gpt-4o-mini")
+DEFAULT_MODEL = os.getenv("MODEL_NAME", "gpt-5-mini")
 SUMMARY_TONE = os.getenv("SUMMARY_TONE", "concise")  # concise|detailed
 MAX_INPUT_CHARS = int(os.getenv("MAX_INPUT_CHARS", "220000"))
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "openai")   # openai|ollama (sample)
