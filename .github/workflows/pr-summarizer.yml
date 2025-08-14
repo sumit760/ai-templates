@@ -74,6 +74,6 @@ jobs:
           EXCLUDE_GLOBS: ${{ inputs.exclude_globs }}
         run: |
           # If using OPTION 1 (script in template repo):
-          python .ai-templates/scripts/pr_summarizer.py
+          python .ai-templates/.github/scripts/pr_summarizer.py
           # If using OPTION 2 (script in caller repo):
           # python .github/scripts/pr_summarizer.py
