@@ -141,3 +141,181 @@ Context:
 {context}
 
 Diff / patches (chunk):
+
+""".strip()
+
+REDUCE_PROMPT = """Combine partial PR summaries into a single, non-repetitive final summary.
+
+Rules:
+- Keep it crisp and reviewer-friendly
+- Merge similar bullets, remove duplicates
+- Keep the same section headings
+- Ensure it stands alone without missing context
+
+Partials:
+{partials}
+""".strip()
+
+def summarize_map_reduce(context: str, diff_text: str) -> str:
+    chunks = chunk_text(diff_text, max_chars=24000)
+    partials = []
+    for idx, ch in enumerate(chunks, 1):
+        p = SECTION_PROMPT.format(tone=SUMMARY_TONE, context=context, chunk=ch)
+        partial = llm_summarize(p, max_tokens=650)
+        partials.append(f"--- Partial {idx} ---\n{partial}\n")
+    if len(partials) == 1:
+        return partials[0].split("--- Partial 1 ---\n",1)[-1].strip()
+    combined = llm_summarize(REDUCE_PROMPT.format(partials="\n".join(partials)), max_tokens=700)
+    return combined
+
+# --------------------------
+# Build PR context
+# --------------------------
+
+def build_context(pr: dict, commits: List[dict], files: List[dict]) -> str:
+    title = pr.get("title","").strip()
+    body = (pr.get("body") or "").strip()
+    author = pr.get("user",{}).get("login","")
+    labels = [l.get("name","") for l in pr.get("labels",[])]
+    commit_msgs = [c.get("commit",{}).get("message","").strip() for c in commits]
+    changed = []
+    for f in files:
+        filename = f.get("filename","")
+        if is_excluded(filename):
+            continue
+        status = f.get("status","")
+        additions = f.get("additions",0)
+        deletions = f.get("deletions",0)
+        changed.append(f"- {filename} ({status}, +{additions}/-{deletions})")
+    ctx = textwrap.dedent(f"""
+    PR: {title}
+    Author: @{author}
+    Labels: {", ".join(labels) if labels else "none"}
+
+    PR description:
+    {body if body else "(no description)"}
+
+    Recent commits (head → base):
+    {os.linesep.join(f"* {m}" for m in commit_msgs[:15])}
+
+    Changed files:
+    {os.linesep.join(changed[:60])}
+    """).strip()
+    return ctx
+
+# --------------------------
+# GH comment (sticky)
+# --------------------------
+
+def upsert_comment(owner: str, repo: str, pr_number: int, token: str, body_md: str):
+    # Find existing bot comment
+    comments_url = f"https://api.github.com/repos/{owner}/{repo}/issues/{pr_number}/comments?per_page=100"
+    resp = gh_get(comments_url, token)
+    existing = None
+    for c in resp.json():
+        if c.get("body","").startswith(PR_SUMMARY_MARKER):
+            existing = c
+            break
+
+    payload = {"body": f"{PR_SUMMARY_MARKER}\n{body_md}"}
+    if existing:
+        cid = existing["id"]
+        gh_patch(f"https://api.github.com/repos/{owner}/{repo}/issues/comments/{cid}", token, payload)
+    else:
+        gh_post(comments_url, token, payload)
+
+# --------------------------
+# Main: GitHub mode or CLI mode
+# --------------------------
+
+def fetch_pr_data_from_env():
+    token = os.getenv("GITHUB_TOKEN")
+    repo_full = os.getenv("GITHUB_REPOSITORY")  # owner/repo
+    event_path = os.getenv("GITHUB_EVENT_PATH")
+    assert token and repo_full and event_path, "Missing GITHUB_* envs"
+
+    with open(event_path, "r", encoding="utf-8") as f:
+        event = json.load(f)
+    pr_number = event.get("pull_request",{}).get("number")
+    assert pr_number, "Not a pull_request event"
+    owner, repo = repo_full.split("/", 1)
+
+    pr_url = f"https://api.github.com/repos/{owner}/{repo}/pulls/{pr_number}"
+    pr = gh_get(pr_url, token).json()
+    commits = gh_get(pr_url + "/commits?per_page=250", token).json()
+    files = gh_get(pr_url + "/files?per_page=300", token).json()
+
+    # Diff (unified)
+    diff_resp = gh_get(pr_url, token, accept="application/vnd.github.v3.diff")
+    diff_text = diff_resp.text
+
+    # Filter out excluded files from diff, if any patterns were provided
+    if EXCLUDE_PATTERNS:
+        filtered_lines = []
+        include = True
+        for line in diff_text.splitlines(True):
+            if line.startswith("diff --git "):
+                # extract path after b/
+                m = re.search(r" a/(.*?) b/(.*?)\n", line)
+                path = m.group(2) if m else ""
+                include = not is_excluded(path)
+            if include:
+                filtered_lines.append(line)
+        diff_text = "".join(filtered_lines)
+
+    # Budget input size
+    if len(diff_text) > MAX_INPUT_CHARS:
+        diff_text = diff_text[:MAX_INPUT_CHARS] + "\n... [truncated]\n"
+
+    return owner, repo, pr_number, token, pr, commits, files, diff_text
+
+def build_markdown_summary(final_summary: str) -> str:
+    return f"""
+## 🤖 PR Summary (auto-generated)
+> Model: `{DEFAULT_MODEL}` | Tone: `{SUMMARY_TONE}`
+
+{final_summary}
+
+---
+_This is an automated summary to assist reviewers. Please verify details and tests._
+""".strip()
+
+def run_github_mode():
+    owner, repo, pr_number, token, pr, commits, files, diff_text = fetch_pr_data_from_env()
+    context = build_context(pr, commits, files)
+    final_summary = summarize_map_reduce(context, diff_text)
+    md = build_markdown_summary(final_summary)
+    upsert_comment(owner, repo, pr_number, token, md)
+
+def run_cli_mode(args):
+    # Reusable outside GitHub: pipe a diff or pass a file path.
+    if args.diff_file and os.path.exists(args.diff_file):
+        with open(args.diff_file, "r", encoding="utf-8", errors="ignore") as f:
+            diff_text = f.read()
+    else:
+        diff_text = sys.stdin.read()
+
+    if len(diff_text) > MAX_INPUT_CHARS:
+        diff_text = diff_text[:MAX_INPUT_CHARS] + "\n... [truncated]\n"
+
+    context = textwrap.dedent(f"""
+    Source: CLI
+    Note: This summary was generated from a raw unified diff provided to the tool.
+    """).strip()
+    final_summary = summarize_map_reduce(context, diff_text)
+    print(build_markdown_summary(final_summary))
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Summarize PR diffs (GitHub Action or CLI).")
+    parser.add_argument("--diff-file", help="Path to a unified diff (if using CLI mode).")
+    args = parser.parse_args()
+
+    try:
+        if os.getenv("GITHUB_EVENT_PATH"):
+            run_github_mode()
+        else:
+            run_cli_mode(args)
+    except Exception as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        sys.exit(1)
+
