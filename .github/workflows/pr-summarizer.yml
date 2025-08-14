@@ -47,7 +47,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: sumit760/ai-templates          # <-- change to your org/repo name
-          ref: v1                                # tag/branch containing the script
+          ref: master                                # tag/branch containing the script
           path: .ai-templates
 
       # OPTION 2: If you prefer keeping the script in each caller repo instead,
