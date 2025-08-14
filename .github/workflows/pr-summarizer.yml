@@ -1,8 +1,35 @@
-name: PR Summarizer
+name: PR Summarizer (reusable)
 
 on:
-  pull_request:
-    types: [opened, reopened, synchronize, ready_for_review, edited]
+  workflow_call:
+    inputs:
+      model_name:
+        type: string
+        required: false
+        default: gpt-4o-mini
+      summary_tone:
+        type: string
+        required: false
+        default: concise            # concise | detailed
+      max_input_chars:
+        type: number
+        required: false
+        default: 220000
+      exclude_globs:
+        type: string
+        required: false
+        default: |
+          **/*.lock
+          **/*.min.js
+          **/*.map
+          **/*.png
+          **/*.jpg
+          **/*.jpeg
+          **/*.gif
+          **/*.pdf
+    secrets:
+      OPENAI_API_KEY:
+        required: true
 
 permissions:
   contents: read
@@ -11,9 +38,21 @@ permissions:
 jobs:
   summarize:
     runs-on: ubuntu-latest
+    concurrency:
+      group: pr-summarizer-${{ github.repository }}-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
     steps:
-      - name: Checkout (optional)
+      # OPTION 1: If the Python script lives in THIS template repo:
+      - name: Checkout template repo (contains script)
         uses: actions/checkout@v4
+        with:
+          repository: sumit760/ai-templates          # <-- change to your org/repo name
+          ref: v1                                # tag/branch containing the script
+          path: .ai-templates
+
+      # OPTION 2: If you prefer keeping the script in each caller repo instead,
+      # replace the step above with:
+      # - uses: actions/checkout@v4
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -28,18 +67,13 @@ jobs:
       - name: Run PR summarizer
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}  # Provide this in repo/org secrets
-          MODEL_NAME: gpt-4o-mini                        # Change to your preferred model
-          SUMMARY_TONE: "concise"                        # concise | detailed
-          MAX_INPUT_CHARS: "220000"                      # budget for diff+context
-          EXCLUDE_GLOBS: |
-            **/*.lock
-            **/*.min.js
-            **/*.map
-            **/*.png
-            **/*.jpg
-            **/*.jpeg
-            **/*.gif
-            **/*.pdf
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          MODEL_NAME: ${{ inputs.model_name }}
+          SUMMARY_TONE: ${{ inputs.summary_tone }}
+          MAX_INPUT_CHARS: ${{ inputs.max_input_chars }}
+          EXCLUDE_GLOBS: ${{ inputs.exclude_globs }}
         run: |
-          python .github/scripts/pr_summarizer.py
+          # If using OPTION 1 (script in template repo):
+          python .ai-templates/scripts/pr_summarizer.py
+          # If using OPTION 2 (script in caller repo):
+          # python .github/scripts/pr_summarizer.py
